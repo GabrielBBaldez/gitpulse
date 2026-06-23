@@ -1,0 +1,13 @@
+package io.github.gabrielbbaldez.gitpulse;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class GitpulseApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(GitpulseApplication.class, args);
+	}
+
+}
