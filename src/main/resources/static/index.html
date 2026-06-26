@@ -18,7 +18,7 @@
 <style>
   :root{
     --ink:#e9f4ff; --dim:rgba(233,244,255,.5); --faint:rgba(233,244,255,.28);
-    --cyan:#46e8ff; --line:rgba(120,180,255,.14);
+    --cyan:#46e8ff; --amber:#ffb347; --line:rgba(120,180,255,.14);
     --disp:"Chakra Petch", sans-serif; --mono:"JetBrains Mono", monospace;
   }
   *{box-sizing:border-box;}
@@ -71,6 +71,19 @@
   #board .btrack{flex:1;height:5px;border-radius:3px;background:rgba(120,180,255,.09);overflow:hidden;}
   #board .bfill{display:block;height:100%;width:0;border-radius:3px;transition:width .6s cubic-bezier(.22,.61,.36,1);}
   #board .bnum{flex:none;width:28px;text-align:right;font-size:11px;color:var(--ink);font-variant-numeric:tabular-nums;}
+  /* trending repos panel (right) */
+  .rcol{display:flex;flex-direction:column;align-items:flex-end;gap:16px;}
+  #trend{width:clamp(220px,24vw,292px);}
+  #trend .thead{display:flex;justify-content:space-between;align-items:center;font-size:9.5px;letter-spacing:3px;text-transform:uppercase;color:var(--faint);margin-bottom:13px;}
+  #trend .thead .pm{color:var(--dim);letter-spacing:2px;}
+  #trend .trows{position:relative;height:175px;}
+  #trend .trow{position:absolute;left:0;right:0;height:25px;display:flex;align-items:center;gap:10px;
+    transition:transform .6s cubic-bezier(.22,.61,.36,1),opacity .45s ease;}
+  #trend .trank{flex:none;width:13px;font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums;text-align:right;}
+  #trend .trepo{flex:1;min-width:0;font-family:var(--disp);font-weight:500;font-size:11.5px;color:var(--ink);letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #trend .tbar{flex:none;width:44px;height:5px;border-radius:3px;background:rgba(120,180,255,.09);overflow:hidden;}
+  #trend .tfill{display:block;height:100%;width:0;border-radius:3px;background:var(--amber);box-shadow:0 0 8px rgba(255,179,71,.7);transition:width .6s cubic-bezier(.22,.61,.36,1);}
+  #trend .tnum{flex:none;width:22px;text-align:right;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;}
   .hint{font-size:9.5px;letter-spacing:2.4px;text-transform:uppercase;color:var(--faint);text-align:right;align-self:flex-end;}
 
   /* hover tooltip */
@@ -84,7 +97,7 @@
   #tip::after{content:"";position:absolute;left:50%;top:100%;transform:translateX(-50%);
     border:6px solid transparent;border-top-color:rgba(70,232,255,.35);}
   .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);}
-  @media(max-width:640px){#board{width:62vw}.sub{display:none}}
+  @media(max-width:640px){#board{width:62vw}#trend{display:none}.sub{display:none}}
 </style>
 </head>
 <body>
@@ -113,7 +126,10 @@
     </div>
     <div class="row" style="align-items:flex-end">
       <div id="board"><div class="bhead"><span>events · this minute</span><span class="pm" id="bwin">live</span></div><div class="rows"></div></div>
-      <div class="hint">drag · orbit &nbsp; scroll · zoom &nbsp; hover · inspect</div>
+      <div class="rcol">
+        <div id="trend"><div class="thead"><span>trending · 5 min</span><span class="pm">hot repos</span></div><div class="trows"></div></div>
+        <div class="hint">drag · orbit &nbsp; scroll · zoom &nbsp; hover · inspect</div>
+      </div>
     </div>
   </div>
 
@@ -361,6 +377,37 @@ function renderBoard(){
   for(const [type,r] of statRows)if(!shown.has(type))r.el.style.opacity='0';
 }
 
+/* ---------- trending repos: hottest repos by star/fork/PR (from /topic/trending) ---------- */
+const trendRows=document.querySelector('#trend .trows');
+const trendCounts=new Map();   // repo -> count in the current 5-min window
+const trendEls=new Map();      // repo -> {el,rank,fill,num}
+const TROWH=25, TREND_N=7;
+function setTrend(repo,count){trendCounts.set(repo,count);renderTrend();}
+function bumpTrend(repo){trendCounts.set(repo,(trendCounts.get(repo)||0)+1);}  // demo only
+function renderTrend(){
+  const entries=[...trendCounts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,TREND_N);
+  const max=Math.max(1,...entries.map(e=>e[1]));
+  const shown=new Set();
+  entries.forEach(([repo,count],i)=>{
+    shown.add(repo);
+    let r=trendEls.get(repo);
+    if(!r){
+      const el=document.createElement('div');el.className='trow';
+      el.innerHTML=`<span class="trank"></span><span class="trepo">${repo}</span><span class="tbar"><span class="tfill"></span></span><span class="tnum"></span>`;
+      el.style.transform=`translateY(${i*TROWH}px)`;
+      trendRows.appendChild(el);
+      r={el,rank:el.querySelector('.trank'),fill:el.querySelector('.tfill'),num:el.querySelector('.tnum')};
+      trendEls.set(repo,r);
+    }
+    r.el.style.transform=`translateY(${i*TROWH}px)`;
+    r.el.style.opacity='1';
+    r.rank.textContent=(i+1);
+    r.fill.style.width=(10+Math.pow(count/max,0.6)*90)+'%';
+    r.num.textContent=count;
+  });
+  for(const [repo,r] of trendEls)if(!shown.has(repo))r.el.style.opacity='0';
+}
+
 /* ---------- animation ---------- */
 const clock=new THREE.Clock();
 function animate(){
@@ -410,15 +457,18 @@ const DEMO_TOT=DEMO_W.reduce((s,e)=>s+e[1],0);
 function demoType(){let r=Math.random()*DEMO_TOT;for(const[t,w]of DEMO_W){r-=w;if(r<=0)return t;}return 'PushEvent';}
 function startDemo(){
   if(demo)return;setLive(false);ltext.textContent='demo';ldot.classList.add('on');
-  demo=setInterval(()=>{const k=1+Math.floor(Math.random()*4);for(let i=0;i<k;i++){const ty=demoType();ignite(ty,demoRepo());bumpStat(ty);}renderBoard();},110);
-  setInterval(()=>{statCounts.clear();},60000);   // mirror the 1-min tumbling window
+  demo=setInterval(()=>{const k=1+Math.floor(Math.random()*4);for(let i=0;i<k;i++){const ty=demoType();ignite(ty,demoRepo());bumpStat(ty);}renderBoard();
+    if(Math.random()<0.6){const hot=REPOS[Math.floor(Math.pow(Math.random(),2.2)*REPOS.length)];bumpTrend(hot);renderTrend();}},110);
+  setInterval(()=>{statCounts.clear();},60000);    // mirror the 1-min stats window
+  setInterval(()=>{trendCounts.clear();},300000);  // mirror the 5-min trending window
 }
 let connected=false;
 try{
   const client=new window.StompJs.Client({webSocketFactory:()=>new window.SockJS('/ws'),reconnectDelay:4000});
   client.onConnect=()=>{connected=true;if(demo){clearInterval(demo);demo=null;}setLive(true);
     client.subscribe('/topic/feed',m=>{let e;try{e=JSON.parse(m.body);}catch(_){return;}const r=e&&e.repo&&e.repo.name;if(!r)return;ignite(e.type||'PushEvent',r);});
-    client.subscribe('/topic/stats',m=>{let s;try{s=JSON.parse(m.body);}catch(_){return;}if(s&&s.type!=null)setStat(s.type,s.count);});};
+    client.subscribe('/topic/stats',m=>{let s;try{s=JSON.parse(m.body);}catch(_){return;}if(s&&s.type!=null)setStat(s.type,s.count);});
+    client.subscribe('/topic/trending',m=>{let s;try{s=JSON.parse(m.body);}catch(_){return;}if(s&&s.repo!=null)setTrend(s.repo,s.count);});};
   client.onWebSocketClose=()=>{if(!demo)setLive(false);};
   client.activate();
 }catch(_){}
