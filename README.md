@@ -38,6 +38,7 @@ activity as it happens.
 - **Async / reactive ingestion** with Spring `WebClient`.
 - **Live push to the browser** over WebSocket (STOMP).
 - Cloud story for the README: AWS **MSK** (managed Kafka) + **ECS/Fargate**.
+- **DevOps esteira** — a real **CI/CD pipeline** (GitHub Actions) plus a full **observability stack** (Prometheus + Grafana + Loki + Jaeger) wired to the live app, built as a **reusable kit** (§20).
 
 ---
 
@@ -84,6 +85,9 @@ high-throughput demos that don't depend on the live rate limit.
 | Dedup | **Caffeine** cache of seen event ids (TTL ~10 min) |
 | Push to browser | **Spring WebSocket + STOMP**, SockJS fallback |
 | Frontend | **Plain HTML + vanilla JS** served as Spring static resources (no Node/bundler). SockJS + StompJS + Chart.js via CDN. |
+| CI/CD | **GitHub Actions** — build, test, coverage (JaCoCo), SonarQube gate, Docker image to GHCR (§20) |
+| Containerization | **Docker** multi-stage build; `docker-compose` for the full local stack |
+| Observability | **Actuator + Micrometer** → **Prometheus** (scrape) → **Grafana**; **Loki** (logs); OpenTelemetry/Jaeger (tracing) — *optional, weakest fit for an async pipeline* (§20) |
 | Base package | `com.gitpulse` (rename to your own, e.g. `io.github.<you>.gitpulse`) |
 
 > Rationale for the front choice: zero front-end toolchain keeps the project a single
@@ -495,10 +499,22 @@ pushes `StatsSnapshot` to `/topic/stats`; front renders a Chart.js chart + throu
 **Done when:** flipping `replay.enabled=true` floods the dashboard from history at speed.
 
 ### Phase 6 — Polish
-Docker Compose for the whole stack, a clean dashboard, error handling/backoff on the poller,
-a short architecture section + screenshot/GIF in this README, and AWS deployment notes
-(MSK + ECS/Fargate). Optional: a `kafka-ui` container, basic tests (poller dedup, topology
-with `TopologyTestDriver`).
+A clean dashboard, error handling/backoff on the poller, a short architecture section +
+screenshot/GIF in this README, and AWS deployment notes (MSK + ECS/Fargate). Optional: a
+`kafka-ui` container.
+(Docker image, tests + coverage, and the full-stack compose move to **Phase 7** — don't duplicate them here.)
+
+### Phase 7a — CI/CD (GitHub Actions)
+**Goal:** ship it like production — an automated pipeline on every push.
+**Build:** write the core tests first (poller dedup, topology via `TopologyTestDriver`) so coverage has teeth, then a GitHub Actions workflow (`.github/workflows/ci.yml`) on every push/PR — checkout → JDK 21 → `mvn verify` → coverage (JaCoCo, fail under a threshold) → build & push a multi-stage Docker image to GHCR. **Quality gate (SonarCloud) is optional** — it's noisy on a solo repo; start with JaCoCo and add Sonar later if you want the badge. Optional CD: deploy on a version tag.
+**Done when:** every push shows a green/red check on GitHub and red can block a PR merge.
+
+### Phase 7b — Observability
+**Goal:** a live "vital signs" dashboard for the app itself.
+**Build:** add `actuator` + `micrometer-registry-prometheus`; expose `/actuator/prometheus`; define custom metrics (events ingested/sec by type, poll duration, 304-cache-hit ratio, rate-limit remaining). Extend `docker-compose` with Prometheus + Grafana (+ optional Loki for logs). **Tracing (Jaeger) is the weakest-fit pillar here** — GitPulse is an async pipeline, not a multi-hop request/response service, so there's no request to follow; metrics + logs are the stars. Treat it as optional / skip.
+**Done when:** `docker compose up` brings up a Grafana dashboard showing the pipeline breathe live — events/sec, rate limit draining, cache-hit ratio.
+
+**Reusable (7a + 7b):** the workflow + the observability compose are a **kit** — drop them into Loomq or any future Java service. Build once, reuse forever. Full detail in §20.
 
 ---
 
@@ -545,4 +561,89 @@ docker compose up -d                 # Kafka (KRaft) on localhost:9092
 - **Partitioning strategy** and per-repo ordering.
 - **At-least-once vs exactly-once** processing in Kafka Streams.
 - Replaying history from **GH Archive** to load-test the pipeline without the live limit.
+
+---
+
+## 20. CI/CD & Observability — the reusable kit (Phase 7 detail)
+
+CI/CD and observability are **not a separate project** — they're a **layer (esteira)** that wraps a running app. GitPulse is the first app to wear it; the same kit then drops onto **Loomq** or any future service. **Build once, reuse forever.**
+
+Why GitPulse is the ideal first host: it's already on GitHub (Actions is native — zero friction), and it's a **stream** — constant events mean lots of natural, *visual* metrics, so observability actually shines (a parked batch app has nothing to watch).
+
+### 20.1 CI/CD — GitHub Actions (the robot on every `git push`)
+
+`.github/workflows/ci.yml`, on every push to `master` and every PR:
+
+1. `actions/checkout` — pull the code
+2. `actions/setup-java` — Temurin 21
+3. `mvn verify` — compile + run tests
+4. **Coverage** — JaCoCo report; fail under a threshold
+5. **Quality gate** — SonarQube/SonarCloud (smells, coverage, duplication)
+6. **Image** — multi-stage `Dockerfile`, then `docker build` + push to **GHCR** (`ghcr.io/<you>/gitpulse`)
+
+On GitHub you get a green/red check per commit, "all checks passed" on PRs, and red can block merge.
+
+**CD** (optional, later): on a version tag, deploy the pushed image — Docker Compose on a VPS, or ECS/Fargate (§2).
+
+Multi-stage `Dockerfile`:
+```dockerfile
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /app
+COPY . .
+RUN mvn -q -DskipTests package
+
+FROM eclipse-temurin:21-jre
+COPY --from=build /app/target/*.jar app.jar
+ENTRYPOINT ["java","-jar","/app.jar"]
 ```
+
+### 20.2 Observability — the app's own dashboard
+
+The "dashboard of the car": see what's happening inside the running app without a debugger. Three pillars:
+
+| Pillar | Tool chain | Answers |
+|--------|-----------|---------|
+| **Metrics** | Actuator + Micrometer → **Prometheus** → **Grafana** | "how much / how fast?" (numbers over time, graphed) |
+| **Logs** | structured logging → **Loki** | "what happened / what broke?" |
+| **Tracing** | OpenTelemetry → **Jaeger** | "where did this request go?" |
+
+Data flow — note Prometheus **pulls** (same pull/poll model as a Kafka consumer):
+```
+GitPulse (/actuator/prometheus)  ──scrape──►  Prometheus  ──query──►  Grafana
+```
+
+**Wire-up:** add `spring-boot-starter-actuator` + `micrometer-registry-prometheus`, then expose it:
+```yaml
+management:
+  endpoints:
+    web.exposure.include: health,info,prometheus
+  metrics:
+    tags:
+      application: gitpulse
+```
+
+**GitPulse-specific custom metrics** — this is what makes the dashboard *alive*:
+```java
+meterRegistry.counter("gitpulse.events.ingested", "type", e.type()).increment();
+meterRegistry.timer("gitpulse.poll.duration").record(elapsed);
+meterRegistry.gauge("gitpulse.github.rate_remaining", rateRemaining);
+// 304 vs 200: counter("gitpulse.poll.responses", "status", status)
+```
+
+**Compose stack** (extends §9): add `prometheus` (scrapes `host.docker.internal:8080/actuator/prometheus`), `grafana` (provisioned datasource + dashboards), and optionally `loki` + `jaeger`.
+
+**What you see:** `docker compose up`, open Grafana, and watch GitPulse breathe live —
+- events/sec rising and falling
+- counts by event type (Push vs PR vs Watch)
+- GitHub rate-limit remaining draining as it polls
+- ETag cache-hit ratio (304s vs 200s)
+
+### 20.3 Why it's a kit (reuse)
+
+The `.github/workflows/` files and the observability half of `docker-compose.yml` are **stack-agnostic for any Spring Boot app**. Lift them into **Loomq** (where Grafana shows jobs/sec and queue depth instead of events/sec) or any future service. The app changes; the esteira doesn't.
+
+### 20.4 Interview angle
+- A real pipeline: tests + coverage gate + quality gate + a container image on every push.
+- The **three pillars** and which question each answers (slow? broken? where did it go?).
+- **Pull-based scraping** (Prometheus) vs push — same trade-off as the messaging layer.
+- **RED / USE** method for dashboard design (Rate-Errors-Duration / Utilization-Saturation-Errors).
