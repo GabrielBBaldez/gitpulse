@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GitPulse — Live GitHub Cosmos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/sockjs-client@1.6.1/dist/sockjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+<style>
+  :root{
+    --ink:#e9f4ff; --dim:rgba(233,244,255,.5); --faint:rgba(233,244,255,.28);
+    --cyan:#46e8ff; --line:rgba(120,180,255,.14);
+    --disp:"Chakra Petch", sans-serif; --mono:"JetBrains Mono", monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;width:100%;background:#04060f;color:var(--ink);overflow:hidden;font-family:var(--mono);cursor:crosshair;}
+  #app{position:fixed;inset:0;}
+  canvas{display:block;}
+
+  /* atmospheric layers behind/above the webgl */
+  #grain{position:fixed;inset:0;pointer-events:none;z-index:2;opacity:.05;mix-blend-mode:screen;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+  #edge{position:fixed;inset:0;pointer-events:none;z-index:2;
+    box-shadow:inset 0 0 240px 40px rgba(2,4,12,.9);}
+
+  /* HUD */
+  #hud{position:fixed;inset:0;z-index:5;pointer-events:none;padding:clamp(18px,2.4vw,36px);
+    display:flex;flex-direction:column;justify-content:space-between;}
+  .row{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;}
+
+  .brand{display:flex;align-items:center;gap:14px;}
+  .seal{width:34px;height:34px;flex:none;position:relative;}
+  .seal::before,.seal::after{content:"";position:absolute;inset:0;border-radius:50%;border:1px solid rgba(70,232,255,.5);}
+  .seal::after{inset:7px;border-color:rgba(70,232,255,.9);box-shadow:0 0 14px rgba(70,232,255,.7);}
+  .seal i{position:absolute;left:50%;top:50%;width:5px;height:5px;border-radius:50%;background:var(--cyan);
+    transform:translate(-50%,-50%);box-shadow:0 0 10px var(--cyan);animation:pp 2.4s ease-in-out infinite;}
+  @keyframes pp{0%,100%{transform:translate(-50%,-50%) scale(1);opacity:1}50%{transform:translate(-50%,-50%) scale(2.2);opacity:.45}}
+  .wm{font-family:var(--disp);font-weight:700;font-size:clamp(20px,2.5vw,30px);letter-spacing:.5px;line-height:1;}
+  .wm b{color:var(--cyan);text-shadow:0 0 16px rgba(70,232,255,.55);font-weight:700;}
+  .sub{font-size:10px;letter-spacing:4px;text-transform:uppercase;color:var(--faint);margin-top:7px;}
+
+  .right{display:flex;flex-direction:column;align-items:flex-end;gap:12px;}
+  .live{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--dim);}
+  .ldot{width:8px;height:8px;border-radius:50%;background:#ff4d6d;box-shadow:0 0 8px #ff4d6d;}
+  .ldot.on{background:#39ffa6;box-shadow:0 0 8px #39ffa6,0 0 18px rgba(57,255,166,.5);animation:bz 1.7s ease-in-out infinite;}
+  @keyframes bz{0%,100%{opacity:1}50%{opacity:.4}}
+  .stat{text-align:right;}
+  .stat .v{font-family:var(--disp);font-weight:700;font-size:clamp(30px,4vw,46px);line-height:.9;color:var(--ink);
+    text-shadow:0 0 22px rgba(70,232,255,.35);font-variant-numeric:tabular-nums;}
+  .stat .u{font-size:9.5px;letter-spacing:3px;text-transform:uppercase;color:var(--faint);margin-top:4px;}
+  .stat .v2{font-size:11px;color:var(--dim);margin-top:9px;letter-spacing:1px;}
+  .stat .v2 b{color:var(--ink);font-weight:500;}
+
+  .legend{display:flex;flex-wrap:wrap;gap:6px 15px;max-width:64vw;font-size:10px;letter-spacing:.6px;color:var(--dim);text-transform:uppercase;}
+  .legend .i{display:flex;align-items:center;gap:6px;}
+  .legend .sw{width:7px;height:7px;border-radius:50%;}
+  .hint{font-size:9.5px;letter-spacing:2.4px;text-transform:uppercase;color:var(--faint);text-align:right;align-self:flex-end;}
+
+  /* hover tooltip */
+  #tip{position:fixed;z-index:9;pointer-events:none;opacity:0;transform:translate(-50%,calc(-100% - 16px));
+    transition:opacity .12s ease;padding:9px 13px;border-radius:9px;white-space:nowrap;
+    background:rgba(8,14,28,.82);backdrop-filter:blur(9px);border:1px solid rgba(70,232,255,.35);
+    box-shadow:0 8px 30px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.03);}
+  #tip .repo{font-family:var(--disp);font-weight:600;font-size:13px;color:var(--ink);letter-spacing:.3px;}
+  #tip .meta{font-size:10px;letter-spacing:.5px;color:var(--dim);margin-top:4px;display:flex;gap:10px;}
+  #tip .meta .t{color:var(--cyan);}
+  #tip::after{content:"";position:absolute;left:50%;top:100%;transform:translateX(-50%);
+    border:6px solid transparent;border-top-color:rgba(70,232,255,.35);}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);}
+  @media(max-width:640px){.legend{max-width:100%}.sub{display:none}}
+</style>
+</head>
+<body>
+  <h2 class="sr-only">GitPulse — a live 3D star chart where each GitHub repository is a glowing star that flares as events stream in. Hover a star to see its repository.</h2>
+  <div id="app"></div>
+  <div id="grain"></div>
+  <div id="edge"></div>
+
+  <div id="hud">
+    <div class="row">
+      <div class="brand">
+        <div class="seal"><i></i></div>
+        <div>
+          <div class="wm">Git<b>Pulse</b></div>
+          <div class="sub">live github star chart</div>
+        </div>
+      </div>
+      <div class="right">
+        <div class="live"><span class="ldot" id="ldot"></span><span id="ltext">connecting</span></div>
+        <div class="stat">
+          <div class="v" id="eps">0.0</div>
+          <div class="u">events / sec</div>
+          <div class="v2"><b id="stars">0</b> stars &nbsp;·&nbsp; <b id="total">0</b> events</div>
+        </div>
+      </div>
+    </div>
+    <div class="row" style="align-items:flex-end">
+      <div class="legend" id="legend"></div>
+      <div class="hint">drag · orbit &nbsp; scroll · zoom &nbsp; hover · inspect</div>
+    </div>
+  </div>
+
+  <div id="tip"><div class="repo"></div><div class="meta"><span class="t"></span><span class="c"></span></div></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---- event type → accent color (used for flare ring + legend) ---- */
+const TYPE = {
+  PushEvent:0x46e8ff, PullRequestEvent:0x9d7bff, PullRequestReviewEvent:0xb79dff,
+  WatchEvent:0xffd24a, IssuesEvent:0xff6f9d, IssueCommentEvent:0xff9ec7,
+  ForkEvent:0x4dffb0, CreateEvent:0x69ffe1, DeleteEvent:0xff5466, ReleaseEvent:0xff9a3d
+};
+const LEGEND=[['push',0x46e8ff],['pull req',0x9d7bff],['star',0xffd24a],['issue',0xff6f9d],['fork',0x4dffb0],['create',0x69ffe1],['delete',0xff5466],['release',0xff9a3d]];
+const typeColor=t=>TYPE[t]??0x8fb6ff;
+(function(){const el=document.getElementById('legend');for(const[l,h]of LEGEND){const c='#'+h.toString(16).padStart(6,'0');const d=document.createElement('div');d.className='i';d.innerHTML=`<span class="sw" style="background:${c};box-shadow:0 0 6px ${c}"></span>${l}`;el.appendChild(d);}})();
+
+/* star base color: hashed from repo OWNER → varied jewel hues (so the cosmos is multi-colored) */
+function ownerColor(repo){
+  const owner=(repo.split('/')[0]||repo);
+  let h=2166136261;for(let i=0;i<owner.length;i++){h^=owner.charCodeAt(i);h=Math.imul(h,16777619);}
+  const hue=((h>>>0)%360)/360;
+  return new THREE.Color().setHSL(hue,0.74,0.62);
+}
+
+/* ---------- renderer / scene / camera ---------- */
+const app=document.getElementById('app');
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(52,innerWidth/innerHeight,0.1,4000);
+camera.position.set(0,64,126);
+
+const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.setClearColor(0x04060f,1);
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.0;
+app.appendChild(renderer.domElement);
+
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;controls.dampingFactor=0.06;
+controls.autoRotate=true;controls.autoRotateSpeed=0.28;
+controls.minDistance=60;controls.maxDistance=320;controls.enablePan=false;
+controls.maxPolarAngle=Math.PI*0.92;controls.minPolarAngle=Math.PI*0.08;
+
+const composer=new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,camera));
+const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),0.82,0.5,0.22);
+composer.addPass(bloom);
+
+/* ---------- soft radial sprite texture (shared) ---------- */
+function softTex(inner){
+  const s=128,c=document.createElement('canvas');c.width=c.height=s;
+  const x=c.getContext('2d');const g=x.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
+  g.addColorStop(0,'rgba(255,255,255,1)');g.addColorStop(inner,'rgba(255,255,255,.55)');
+  g.addColorStop(0.55,'rgba(255,255,255,.12)');g.addColorStop(1,'rgba(255,255,255,0)');
+  x.fillStyle=g;x.fillRect(0,0,s,s);const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t;
+}
+const GLOW=softTex(0.22), STAR=softTex(0.12);
+
+/* ---------- deep starfield (the cosmos backdrop) ---------- */
+function starfield(count,rMin,rMax,size,opacity){
+  const pos=new Float32Array(count*3),col=new Float32Array(count*3),c=new THREE.Color();
+  for(let i=0;i<count;i++){
+    const r=rMin+Math.random()*(rMax-rMin),t=Math.random()*Math.PI*2,p=Math.acos(2*Math.random()-1);
+    pos[i*3]=r*Math.sin(p)*Math.cos(t);pos[i*3+1]=r*Math.cos(p)*0.8;pos[i*3+2]=r*Math.sin(p)*Math.sin(t);
+    const roll=Math.random();
+    const hue=roll<0.7?0.58+Math.random()*0.06:(roll<0.9?0.09+Math.random()*0.05:0.95);
+    c.setHSL(hue,0.5,0.55+Math.random()*0.4);
+    col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  const m=new THREE.PointsMaterial({size,map:STAR,vertexColors:true,transparent:true,opacity,depthWrite:false,blending:THREE.AdditiveBlending,sizeAttenuation:true});
+  const pts=new THREE.Points(g,m);pts.matrixAutoUpdate=false;scene.add(pts);return pts;
+}
+const sfFar=starfield(4200,260,1100,2.0,0.9);
+const sfNear=starfield(900,120,300,3.2,0.8);
+
+/* faint nebula clouds for atmosphere */
+function nebula(x,y,z,r,hex,op){
+  const m=new THREE.SpriteMaterial({map:GLOW,color:hex,transparent:true,opacity:op,depthWrite:false,blending:THREE.AdditiveBlending});
+  const s=new THREE.Sprite(m);s.position.set(x,y,z);s.scale.setScalar(r);scene.add(s);return s;
+}
+nebula(-120,-30,-180,420,0x1f3b8c,0.16);
+nebula(160,40,-120,360,0x6a1f8c,0.13);
+nebula(40,-60,140,300,0x0f6e7a,0.10);
+
+/* soft spherical core glow (reads well from ANY angle, unlike a flat disk) */
+(function coreGlow(){
+  const s1=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:0x3f6fd0,transparent:true,opacity:.40,depthWrite:false,blending:THREE.AdditiveBlending}));
+  s1.scale.setScalar(230);scene.add(s1);
+  const s2=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:0x6a3fb0,transparent:true,opacity:.20,depthWrite:false,blending:THREE.AdditiveBlending}));
+  s2.scale.setScalar(130);scene.add(s2);
+})();
+
+/* ---------- repo nodes ---------- */
+const CORE_GEO=new THREE.SphereGeometry(1,16,16);
+const RING_GEO=new THREE.RingGeometry(0.93,1,64);
+const nodeGroup=new THREE.Group(),glowGroup=new THREE.Group(),pulseGroup=new THREE.Group();
+scene.add(nodeGroup,glowGroup,pulseGroup);
+
+const nodes=new Map();      // repo -> node
+const cores=[];             // raycast targets
+const pulses=[];const POOL=[];
+const MAX=200;
+
+function diskPoint(){
+  // flattened-sphere cloud, generously spread so stars have breathing room (not clumped)
+  const u=Math.random(),v=Math.random();
+  const theta=u*Math.PI*2, phi=Math.acos(2*v-1);
+  const r=26+Math.pow(Math.random(),0.5)*112;
+  return new THREE.Vector3(
+    Math.sin(phi)*Math.cos(theta)*r,
+    Math.cos(phi)*r*0.66,
+    Math.sin(phi)*Math.sin(theta)*r
+  );
+}
+
+function createNode(repo,type){
+  const base=ownerColor(repo);
+  const pos=diskPoint();
+  const core=new THREE.Mesh(CORE_GEO,new THREE.MeshBasicMaterial({color:base.clone(),transparent:true,opacity:1,toneMapped:false}));
+  core.position.copy(pos);core.userData.repo=repo;
+  const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:base.clone(),transparent:true,opacity:.85,depthWrite:false,blending:THREE.AdditiveBlending}));
+  glow.position.copy(pos);
+  nodeGroup.add(core);glowGroup.add(glow);cores.push(core);
+  const n={repo,pos,core,glow,base:base.clone(),count:1,energy:1.4,size:0.62,last:performance.now(),seed:Math.random()*99,lastType:type,spin:(Math.random()-0.5)*0.0007};
+  nodes.set(repo,n);
+  if(nodes.size>MAX)evict();
+  return n;
+}
+function evict(){let o=null,ot=Infinity;for(const n of nodes.values())if(n.last<ot&&n!==hovered){ot=n.last;o=n;}if(o)removeNode(o);}
+function removeNode(n){
+  nodeGroup.remove(n.core);glowGroup.remove(n.glow);
+  n.core.material.dispose();n.glow.material.dispose();
+  const i=cores.indexOf(n.core);if(i>=0)cores.splice(i,1);
+  nodes.delete(n.repo);
+}
+
+function spawnPulse(pos,color,max,life,w){
+  let m=POOL.pop();
+  if(!m){m=new THREE.Mesh(RING_GEO,new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:1,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide,toneMapped:false}));pulseGroup.add(m);}
+  m.visible=true;m.position.copy(pos);m.material.color.set(color);m.lookAt(camera.position);m.scale.setScalar(0.2);
+  pulses.push({m,age:0,life,max,w:w||1});
+}
+
+function ignite(type,repo){
+  let n=nodes.get(repo);
+  if(!n)n=createNode(repo,type);
+  else{n.count++;n.last=performance.now();n.lastType=type;}
+  n.energy=Math.min(n.energy+1.6,6);
+  n.size=0.6+Math.log2(n.count+1)*0.72;
+  spawnPulse(n.pos,typeColor(type),n.size*3.4,820);
+  total++;tEl.textContent=total;
+  burst.push(n);if(!bt)bt=setTimeout(flushBurst,360);
+  recent.push(performance.now());
+}
+let burst=[],bt=null;
+function flushBurst(){
+  if(burst.length>=14){let b=null,bc=-1;for(const n of burst)if(nodes.has(n.repo)&&n.count>bc){bc=n.count;b=n;}
+    if(b){b.energy=Math.min(b.energy+3.2,9);}}
+  burst=[];bt=null;
+}
+
+/* ---------- links between co-active nearby stars ---------- */
+const LMAX=120,lpos=new Float32Array(LMAX*2*3);
+const lgeo=new THREE.BufferGeometry();lgeo.setAttribute('position',new THREE.BufferAttribute(lpos,3));lgeo.setDrawRange(0,0);
+const lmat=new THREE.LineBasicMaterial({color:0x5ec8ff,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending});
+const lines=new THREE.LineSegments(lgeo,lmat);lines.frustumCulled=false;scene.add(lines);
+let lacc=0;
+function updateLinks(){
+  const a=[];for(const n of nodes.values())if(n.energy>1.1)a.push(n);
+  let idx=0;const mv=LMAX*2;
+  outer:for(let i=0;i<a.length;i++)for(let j=i+1;j<a.length;j++){
+    if(a[i].pos.distanceTo(a[j].pos)<26){
+      lpos[idx*3]=a[i].pos.x;lpos[idx*3+1]=a[i].pos.y;lpos[idx*3+2]=a[i].pos.z;idx++;
+      lpos[idx*3]=a[j].pos.x;lpos[idx*3+1]=a[j].pos.y;lpos[idx*3+2]=a[j].pos.z;idx++;
+      if(idx>=mv)break outer;
+    }}
+  lgeo.attributes.position.needsUpdate=true;lgeo.setDrawRange(0,idx);
+  lmat.opacity+=((idx>0?0.28:0)-lmat.opacity)*0.07;
+}
+
+/* ---------- hover / raycast ---------- */
+const ray=new THREE.Raycaster();const mouse=new THREE.Vector2(-9,-9);let pointer={x:-9,y:-9,active:false};let hovered=null;
+const tip=document.getElementById('tip'),tipRepo=tip.querySelector('.repo'),tipType=tip.querySelector('.t'),tipCount=tip.querySelector('.c');
+addEventListener('pointermove',e=>{pointer.x=e.clientX;pointer.y=e.clientY;pointer.active=true;mouse.x=(e.clientX/innerWidth)*2-1;mouse.y=-(e.clientY/innerHeight)*2+1;});
+addEventListener('pointerleave',()=>{pointer.active=false;});
+function pick(){
+  if(!pointer.active){setHover(null);return;}
+  ray.setFromCamera(mouse,camera);ray.params.Line.threshold=0;
+  const hit=ray.intersectObjects(cores,false);
+  setHover(hit.length?nodes.get(hit[0].object.userData.repo):null);
+}
+function setHover(n){
+  if(hovered===n){if(n){tip.style.left=pointer.x+'px';tip.style.top=pointer.y+'px';}return;}
+  hovered=n;
+  if(n){
+    tipRepo.textContent=n.repo;tipType.textContent=n.lastType||'';tipCount.textContent=n.count+(n.count>1?' events':' event');
+    tip.style.left=pointer.x+'px';tip.style.top=pointer.y+'px';tip.style.opacity='1';
+    document.body.style.cursor='pointer';controls.autoRotate=false;
+  }else{tip.style.opacity='0';document.body.style.cursor='crosshair';controls.autoRotate=true;}
+}
+
+/* ---------- HUD wiring ---------- */
+const ldot=document.getElementById('ldot'),ltext=document.getElementById('ltext'),epsEl=document.getElementById('eps'),sEl=document.getElementById('stars'),tEl=document.getElementById('total');
+let total=0,recent=[],epsShow=0;
+function setLive(s){if(s){ldot.classList.add('on');ltext.textContent='live';}else{ldot.classList.remove('on');ltext.textContent='offline';}}
+
+/* ---------- animation ---------- */
+const clock=new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05),t=clock.elapsedTime;
+  sfFar.rotation.y+=dt*0.006;sfNear.rotation.y-=dt*0.01;
+  for(const n of nodes.values()){
+    n.energy+=(0-n.energy)*dt*1.3;if(n.energy<0.001)n.energy=0;
+    const hov=hovered===n?1:0;
+    const breathe=1+Math.sin(t*1.5+n.seed)*0.05;
+    const rad=n.size*breathe*(1+n.energy*0.16)*(1+hov*0.5);
+    n.core.scale.setScalar(rad);n.core.position.copy(n.pos);
+    n.glow.scale.setScalar(rad*(3.2+n.energy*1.7+hov*1.5));n.glow.position.copy(n.pos);
+    const lum=Math.min(0.85+n.energy*0.4+hov*0.6,2.4);
+    n.core.material.color.copy(n.base).multiplyScalar(lum);
+    n.glow.material.color.copy(n.base);
+    n.glow.material.opacity=Math.min(0.4+n.energy*0.18+hov*0.3,1);
+  }
+  for(let i=pulses.length-1;i>=0;i--){const p=pulses[i];p.age+=dt*1000;const k=p.age/p.life;
+    if(k>=1){p.m.visible=false;POOL.push(p.m);pulses.splice(i,1);continue;}
+    const e=1-Math.pow(1-k,2.6);p.m.scale.setScalar(0.3+e*p.max);p.m.material.opacity=(1-k)*0.42;p.m.lookAt(camera.position);}
+  lacc+=dt;if(lacc>0.09){updateLinks();lacc=0;}
+  pick();
+  const now=performance.now();while(recent.length&&now-recent[0]>1000)recent.shift();
+  epsShow+=(recent.length-epsShow)*0.12;epsEl.textContent=epsShow.toFixed(1);
+  sEl.textContent=nodes.size;
+  controls.update();composer.render();
+}
+const UP=new THREE.Vector3(0,1,0);
+animate();
+
+addEventListener('resize',()=>{
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));composer.setPixelRatio(renderer.getPixelRatio());
+  camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);
+},{passive:true});
+
+/* ---------- live data (SockJS+STOMP) with auto-demo fallback ---------- */
+const REPOS=['apache/iceberg','torvalds/linux','facebook/react','rust-lang/rust','kubernetes/kubernetes','vercel/next.js','denoland/deno','golang/go','microsoft/vscode','apache/kafka','tensorflow/tensorflow','delta-io/delta','spring-projects/spring-boot','nodejs/node','pytorch/pytorch','hashicorp/terraform','apache/spark','grafana/grafana','elastic/elasticsearch','redis/redis','prometheus/prometheus','open-telemetry/opentelemetry','gitlabhq/gitlabhq','angular/angular','vuejs/core','sveltejs/svelte','bitcoin/bitcoin','ethereum/go-ethereum','home-assistant/core','obsproject/obs-studio','ollama/ollama','langchain-ai/langchain','huggingface/transformers','keycloak/keycloak','strimzi/strimzi-kafka-operator','apache/seatunnel','apache/flink','dbeaver/dbeaver','neovim/neovim','zed-industries/zed'];
+const TYPES=Object.keys(TYPE);
+let demo=null;
+const DOWN=['apache','microsoft','google','facebook','vercel','rust-lang','golang','denoland','kubernetes','hashicorp','elastic','grafana','redis','nodejs','pytorch','tensorflow','sveltejs','vuejs','angular','spring-projects','strimzi','open-telemetry','langchain-ai','huggingface','ollama','home-assistant','neovim','zed-industries','dbeaver','keycloak','prometheus','bitcoin','ethereum','obsproject','astral-sh','bevyengine','tauri-apps','withastro'];
+const DNOUN=['core','engine','api','server','client','dashboard','cli','sdk','tools','data','web','app','runtime','proxy','cache','stream','worker','agent','bridge','kit','flow','sync','lab','studio','forge','nexus','pulse','vault','atlas','orbit','relay','mesh','spark','beacon'];
+function demoRepo(){return Math.random()<0.4?REPOS[Math.floor(Math.random()*REPOS.length)]:DOWN[Math.floor(Math.random()*DOWN.length)]+'/'+DNOUN[Math.floor(Math.random()*DNOUN.length)]+(Math.random()<0.55?'-'+Math.floor(Math.random()*60):'');}
+function startDemo(){
+  if(demo)return;setLive(false);ltext.textContent='demo';ldot.classList.add('on');
+  demo=setInterval(()=>{const k=1+Math.floor(Math.random()*4);for(let i=0;i<k;i++){const ty=Math.random()<0.62?'PushEvent':TYPES[Math.floor(Math.random()*TYPES.length)];ignite(ty,demoRepo());}},110);
+}
+let connected=false;
+try{
+  const client=new window.StompJs.Client({webSocketFactory:()=>new window.SockJS('/ws'),reconnectDelay:4000});
+  client.onConnect=()=>{connected=true;if(demo){clearInterval(demo);demo=null;}setLive(true);
+    client.subscribe('/topic/feed',m=>{let e;try{e=JSON.parse(m.body);}catch(_){return;}const r=e&&e.repo&&e.repo.name;if(!r)return;ignite(e.type||'PushEvent',r);});};
+  client.onWebSocketClose=()=>{if(!demo)setLive(false);};
+  client.activate();
+}catch(_){}
+setTimeout(()=>{if(!connected)startDemo();},2200);
+</script>
+</body>
+</html>
