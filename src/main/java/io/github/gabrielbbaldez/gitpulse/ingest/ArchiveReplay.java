@@ -40,7 +40,7 @@ public class ArchiveReplay  implements CommandLineRunner {
                     String repo = objectMapper.readTree(line).get("repo").get("name").asText();
                     eventProducer.publish(repo,line);
                     count++;
-                    if (count % 20 == 0) Thread.sleep(30);
+                    if (count % 20 == 0) Thread.sleep(200);
                 }
                 System.out.println("read " + count + " events from archive");
                 return;
